@@ -2757,6 +2757,89 @@ resolve_dynamic_struct (struct type *type,
   return resolved_type;
 }
 
+/* The type is Node or its descendant if it is a structure in which
+   1. the first field  is called "type" and the type of the field is NodeTag
+   or
+   2. the first field  is Node or its descendant */
+static bool type_is_Node(struct type *type)
+{
+  while (type->code () == TYPE_CODE_STRUCT && type->num_fields () > 0)
+    {
+      struct field *field0 = type->fields ();
+      struct type *type0 = field0->type ();
+      if (strcmp(field0->name (), "type") == 0 &&
+          strcmp(type0->name (), "NodeTag") == 0)
+        return true;
+
+      type = check_typedef (type0);
+    }
+
+  return false;
+}
+
+static struct type *get_type_from_NodeTag(CORE_ADDR addr, bool do_update_fields);
+
+/* Update types of fields of t
+   1. If the field is pointer to Node or its descendant, set its type using
+   the type field;
+   2. If the field is a structure, update its fields types too. */
+static struct type *update_type_fields(struct type *t, CORE_ADDR addr)
+{
+  unsigned num_fields = t->num_fields ();
+  for (unsigned iFld = 0; iFld < num_fields; iFld++)
+    {
+      struct type *fldType = check_typedef(t->field(iFld).type());
+      if (fldType->code () == TYPE_CODE_PTR)
+        {
+          struct type *target_fld_type = check_typedef (fldType->target_type());
+          if (type_is_Node(target_fld_type))
+            {
+              CORE_ADDR ptr;
+              read_memory (addr + t->field(iFld).loc_bitpos()/8, (gdb_byte*)&ptr, sizeof(ptr));
+              if (ptr != 0)
+                {
+                  /* do_update_fields is false to avoid infinite recursion. It
+                     is not necessary to update the types of the fields now */
+                  struct type *tnew = get_type_from_NodeTag(ptr, false);
+                  if (tnew != nullptr)
+                    t->field(iFld).set_type(lookup_pointer_type(tnew));
+                }
+            }
+        }
+      else if (fldType->code () == TYPE_CODE_STRUCT)
+        {
+          fldType = update_type_fields(fldType, addr + t->field(iFld).loc_bitpos()/8);
+          t->field(iFld).set_type(fldType);
+        }
+    }
+
+  return t;
+}
+
+static struct type *get_type_from_NodeTag(CORE_ADDR addr, bool do_update_fields)
+{
+  struct type *typeNodeTag = check_typedef (lookup_typename (current_language, "NodeTag", NULL, 0));
+  LONGEST enumval = read_memory_unsigned_integer(addr, typeNodeTag->length(), BFD_ENDIAN_LITTLE);
+
+  unsigned enumLen = typeNodeTag->num_fields ();
+  for (unsigned i = 0; i < enumLen; i++)
+    if (enumval == typeNodeTag->field (i).loc_enumval ())
+      {
+        const char *type_name = typeNodeTag->field (i).name ();
+        if (type_name[0] != 'T' || type_name[1] != '_')
+          return nullptr;
+
+        struct type *t = lookup_typename (current_language, type_name + 2, NULL, 0);
+        if (!do_update_fields)
+          return t;
+
+        t = check_typedef(t);
+        return update_type_fields(t, addr);
+      }
+
+  return nullptr;
+}
+
 /* Worker for resolved_dynamic_type.  */
 
 static struct type *
@@ -2769,6 +2852,27 @@ resolve_dynamic_type_internal (struct type *type,
   struct type *resolved_type = nullptr;
   struct dynamic_prop *prop;
   CORE_ADDR value;
+
+  if (real_type->code () == TYPE_CODE_PTR)
+    {
+      struct type *target_real_type = check_typedef (real_type->target_type());
+      if (type_is_Node(target_real_type))
+        {
+          CORE_ADDR ptr;
+          read_memory (addr_stack->addr, (gdb_byte*)&ptr, sizeof(ptr));
+          struct type *t = get_type_from_NodeTag(ptr, true);
+          if (t == nullptr)
+            return type;
+          return lookup_pointer_type(t);
+        }
+    }
+  else if (type_is_Node(real_type))
+    {
+      struct type *t = get_type_from_NodeTag(addr_stack->addr, true);
+      if (t == nullptr)
+        return type;
+      return check_typedef(t);
+    }
 
   if (!is_dynamic_type_internal (real_type, top_level))
     return type;
