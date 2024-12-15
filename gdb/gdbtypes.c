@@ -2830,11 +2830,51 @@ static struct type *get_type_from_NodeTag(CORE_ADDR addr, bool do_update_fields)
           return nullptr;
 
         struct type *t = lookup_typename (current_language, type_name + 2, NULL, 0);
-        if (!do_update_fields)
-          return t;
+        if (strcmp(type_name, "T_List") == 0)
+        {
+          const unsigned std_fld_cnt = 4;
+          int length;
+          read_memory (addr + typeNodeTag->length(), (gdb_byte*)&length, sizeof(length));
+          if (length > 0)
+          {
+            t = copy_type(t);
+            // The memory should be freed!
+            struct field *f = (struct field *)malloc(sizeof(*f) * (std_fld_cnt + length));
+            memcpy (f, t->fields (), sizeof (*f) * std_fld_cnt);
+            memset (&f[std_fld_cnt], 0, sizeof (*f) * length);
 
-        t = check_typedef(t);
-        return update_type_fields(t, addr);
+            char fldName[16] = "elem";
+            CORE_ADDR ListCell_ptr;
+            read_memory (addr + t->field(2/*ListCell   *head*/).loc_bitpos()/8, (gdb_byte*)&ListCell_ptr, sizeof(ListCell_ptr));
+            for (int iElem = 0; iElem < length; iElem++)
+            {
+              struct field *newFld = &f[std_fld_cnt + iElem];
+              snprintf(fldName + 4, sizeof(fldName) - 4, "%i", iElem);
+              newFld->set_name (xstrdup(fldName));
+
+              CORE_ADDR ptr_value; /*The 1st field of ListCell*/
+              read_memory (ListCell_ptr, (gdb_byte*)&ptr_value, sizeof(ptr_value));
+
+              newFld->set_type (lookup_pointer_type(get_type_from_NodeTag(ptr_value, false)));
+              newFld->set_loc_physaddr(ListCell_ptr);
+
+              /* get pointer to next ListCell */
+              read_memory (ListCell_ptr + sizeof(ptr_value), (gdb_byte*)&ListCell_ptr, sizeof(ListCell_ptr));
+            }
+
+            t->set_num_fields (std_fld_cnt + length);
+            t->set_fields (f);
+
+            char typeName[16] = "List";
+            snprintf(typeName + 4, sizeof(typeName) - 4, "%i", length);
+            t->set_name(xstrdup(typeName));
+          }
+        } else if (do_update_fields) {
+          t = check_typedef(t);
+          return update_type_fields(t, addr);
+        }
+
+        return t;
       }
 
   return nullptr;
