@@ -2849,15 +2849,26 @@ static struct type *get_type_from_NodeTag(CORE_ADDR addr, bool do_update_fields)
   for (unsigned i = 0; i < enumLen; i++)
     if (enumval == typeNodeTag->field (i).loc_enumval ())
       {
-        const char *type_name = typeNodeTag->field (i).name ();
-        if (type_name[0] != 'T' || type_name[1] != '_')
+        const char *NodeTag_value = typeNodeTag->field (i).name ();
+        if (NodeTag_value[0] != 'T' || NodeTag_value[1] != '_')
           return nullptr;
 
-        struct type *t = lookup_typename (current_language, type_name + 2, NULL, 1);
+        const char *type_name = NodeTag_value + 2;
+        if (strcmp (type_name, "String") == 0 ||
+            strcmp (type_name, "BitString") == 0 ||
+            strcmp (type_name, "Float") == 0 ||
+            strcmp (type_name, "Integer") == 0)
+          type_name = "Value";
+
+        if (strcmp (type_name, "OidList") == 0 ||
+            strcmp (type_name, "IntList") == 0)
+          type_name = "List";
+
+        struct type *t = lookup_typename (current_language, type_name, NULL, 1);
         if (nullptr == t)
           return nullptr;
 
-        if (strcmp(type_name, "T_List") == 0)
+        if (strcmp(type_name, "List") == 0)
         {
           const unsigned std_fld_cnt = 4;
           int length;
@@ -2896,13 +2907,30 @@ static struct type *get_type_from_NodeTag(CORE_ADDR addr, bool do_update_fields)
                   newFld->set_name (xstrdup(fldName));
 
                   CORE_ADDR ptr_value; /*The 1st field of ListCell*/
-                  read_memory (ListCell_ptr, (gdb_byte*)&ptr_value, sizeof(ptr_value));
+                  if (strcmp (NodeTag_value, "T_List") == 0)
+                    {
+                      read_memory (ListCell_ptr, (gdb_byte*)&ptr_value, sizeof(ptr_value));
 
-                  struct type *fld_type = get_type_from_NodeTag(ptr_value, false);
-                  if (nullptr == fld_type)
-                    break;
+                      struct type *fld_type = get_type_from_NodeTag(ptr_value, false);
+                      if (nullptr == fld_type)
+                        break;
 
-                  newFld->set_type (lookup_pointer_type(fld_type));
+                      newFld->set_type (lookup_pointer_type(fld_type));
+                    }
+                  else if (strcmp (NodeTag_value, "T_OidList") == 0)
+                    {
+                      struct type *typeOid = lookup_typename (current_language, "Oid", NULL, 1);
+                      if (nullptr == typeOid)
+                        break;
+                      newFld->set_type (typeOid);
+                    }
+                  else if (strcmp (NodeTag_value, "T_IntList") == 0)
+                    {
+                      struct type *typeInt = lookup_typename (current_language, "int", NULL, 1);
+                      if (nullptr == typeInt)
+                        break;
+                      newFld->set_type (typeInt);
+                    }
                   newFld->set_loc_physaddr(ListCell_ptr);
 
                   /* get pointer to next ListCell */
@@ -2914,8 +2942,8 @@ static struct type *get_type_from_NodeTag(CORE_ADDR addr, bool do_update_fields)
           t->set_num_fields (std_fld_cnt + iElem);
           t->set_fields (f);
 
-          char typeName[16] = "List";
-          snprintf(typeName + 4, sizeof(typeName) - 4, "%i", iElem);
+          char typeName[16];
+          snprintf(typeName, sizeof(typeName), "%s%i", NodeTag_value + 2, iElem);
           t->set_name(xstrdup(typeName));
         } else if (do_update_fields) {
           t = check_typedef(t);
