@@ -2767,8 +2767,8 @@ static bool type_is_Node(struct type *type)
     {
       struct field *field0 = type->fields ();
       struct type *type0 = field0->type ();
-      if (strcmp(field0->name (), "type") == 0 &&
-          strcmp(type0->name (), "NodeTag") == 0)
+      if (streq(field0->name (), "type") &&
+          streq(type0->name (), "NodeTag"))
         return true;
 
       type = check_typedef (type0);
@@ -2854,21 +2854,21 @@ static struct type *get_type_from_NodeTag(CORE_ADDR addr, bool do_update_fields)
           return nullptr;
 
         const char *type_name = NodeTag_value + 2;
-        if (strcmp (type_name, "String") == 0 ||
-            strcmp (type_name, "BitString") == 0 ||
-            strcmp (type_name, "Float") == 0 ||
-            strcmp (type_name, "Integer") == 0)
+        if (streq (type_name, "String") ||
+            streq (type_name, "BitString") ||
+            streq (type_name, "Float") ||
+            streq (type_name, "Integer"))
           type_name = "Value";
 
-        if (strcmp (type_name, "OidList") == 0 ||
-            strcmp (type_name, "IntList") == 0)
+        if (streq (type_name, "OidList") ||
+            streq (type_name, "IntList"))
           type_name = "List";
 
         struct type *t = lookup_typename (current_language, type_name, NULL, 1);
         if (nullptr == t)
           return nullptr;
 
-        if (strcmp(type_name, "List") == 0)
+        if (streq(type_name, "List"))
         {
           const unsigned std_fld_cnt = 4;
           int length;
@@ -2907,7 +2907,7 @@ static struct type *get_type_from_NodeTag(CORE_ADDR addr, bool do_update_fields)
                   newFld->set_name (xstrdup(fldName));
 
                   CORE_ADDR ptr_value; /*The 1st field of ListCell*/
-                  if (strcmp (NodeTag_value, "T_List") == 0)
+                  if (streq (NodeTag_value, "T_List"))
                     {
                       read_memory (ListCell_ptr, (gdb_byte*)&ptr_value, sizeof(ptr_value));
 
@@ -2917,14 +2917,14 @@ static struct type *get_type_from_NodeTag(CORE_ADDR addr, bool do_update_fields)
 
                       newFld->set_type (lookup_pointer_type(fld_type));
                     }
-                  else if (strcmp (NodeTag_value, "T_OidList") == 0)
+                  else if (streq (NodeTag_value, "T_OidList"))
                     {
                       struct type *typeOid = lookup_typename (current_language, "Oid", NULL, 1);
                       if (nullptr == typeOid)
                         break;
                       newFld->set_type (typeOid);
                     }
-                  else if (strcmp (NodeTag_value, "T_IntList") == 0)
+                  else if (streq (NodeTag_value, "T_IntList"))
                     {
                       struct type *typeInt = lookup_typename (current_language, "int", NULL, 1);
                       if (nullptr == typeInt)
