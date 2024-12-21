@@ -2786,30 +2786,39 @@ static struct type *get_type_from_NodeTag(CORE_ADDR addr, bool do_update_fields)
 static struct type *update_type_fields(struct type *t, CORE_ADDR addr)
 {
   unsigned num_fields = t->num_fields ();
-  for (unsigned iFld = 0; iFld < num_fields; iFld++)
+  struct field *field = t->fields();
+  for (unsigned iFld = 0; iFld < num_fields; iFld++, field++)
     {
-      struct type *fldType = check_typedef(t->field(iFld).type());
+      struct type *fldType = check_typedef(field->type());
       if (fldType->code () == TYPE_CODE_PTR)
         {
           struct type *target_fld_type = check_typedef (fldType->target_type());
           if (type_is_Node(target_fld_type))
             {
               CORE_ADDR ptr;
-              read_memory (addr + t->field(iFld).loc_bitpos()/8, (gdb_byte*)&ptr, sizeof(ptr));
+              try
+                {
+                  read_memory (addr + field->loc_bitpos()/8, (gdb_byte*)&ptr, sizeof(ptr));
+                }
+              catch(...)
+                {
+                  continue;
+                }
+
               if (ptr != 0)
                 {
                   /* do_update_fields is false to avoid infinite recursion. It
                      is not necessary to update the types of the fields now */
                   struct type *tnew = get_type_from_NodeTag(ptr, false);
                   if (tnew != nullptr)
-                    t->field(iFld).set_type(lookup_pointer_type(tnew));
+                    field->set_type(lookup_pointer_type(tnew));
                 }
             }
         }
       else if (fldType->code () == TYPE_CODE_STRUCT)
         {
-          fldType = update_type_fields(fldType, addr + t->field(iFld).loc_bitpos()/8);
-          t->field(iFld).set_type(fldType);
+          fldType = update_type_fields(fldType, addr + field->loc_bitpos()/8);
+          field->set_type(fldType);
         }
     }
 
@@ -2818,8 +2827,23 @@ static struct type *update_type_fields(struct type *t, CORE_ADDR addr)
 
 static struct type *get_type_from_NodeTag(CORE_ADDR addr, bool do_update_fields)
 {
-  struct type *typeNodeTag = check_typedef (lookup_typename (current_language, "NodeTag", NULL, 0));
-  LONGEST enumval = read_memory_unsigned_integer(addr, typeNodeTag->length(), BFD_ENDIAN_LITTLE);
+  if (0 == addr)
+    return nullptr;
+
+  struct type *typeNodeTag = lookup_typename (current_language, "NodeTag", NULL, 1);
+  if (nullptr == typeNodeTag)
+    return nullptr;
+
+  typeNodeTag = check_typedef (typeNodeTag);
+  LONGEST enumval;
+  try
+    {
+      enumval = read_memory_unsigned_integer (addr, typeNodeTag->length (), BFD_ENDIAN_LITTLE);
+    }
+  catch(...)
+    {
+      return nullptr;
+    }
 
   unsigned enumLen = typeNodeTag->num_fields ();
   for (unsigned i = 0; i < enumLen; i++)
@@ -2829,46 +2853,70 @@ static struct type *get_type_from_NodeTag(CORE_ADDR addr, bool do_update_fields)
         if (type_name[0] != 'T' || type_name[1] != '_')
           return nullptr;
 
-        struct type *t = lookup_typename (current_language, type_name + 2, NULL, 0);
+        struct type *t = lookup_typename (current_language, type_name + 2, NULL, 1);
+        if (nullptr == t)
+          return nullptr;
+
         if (strcmp(type_name, "T_List") == 0)
         {
           const unsigned std_fld_cnt = 4;
           int length;
-          read_memory (addr + typeNodeTag->length(), (gdb_byte*)&length, sizeof(length));
-          if (length > 0)
-          {
-            t = copy_type(t);
-            // The memory should be freed!
-            struct field *f = (struct field *)malloc(sizeof(*f) * (std_fld_cnt + length));
-            memcpy (f, t->fields (), sizeof (*f) * std_fld_cnt);
-            memset (&f[std_fld_cnt], 0, sizeof (*f) * length);
-
-            char fldName[16] = "elem";
-            CORE_ADDR ListCell_ptr;
-            read_memory (addr + t->field(2/*ListCell   *head*/).loc_bitpos()/8, (gdb_byte*)&ListCell_ptr, sizeof(ListCell_ptr));
-            for (int iElem = 0; iElem < length; iElem++)
+          try
             {
-              struct field *newFld = &f[std_fld_cnt + iElem];
-              snprintf(fldName + 4, sizeof(fldName) - 4, "%i", iElem);
-              newFld->set_name (xstrdup(fldName));
-
-              CORE_ADDR ptr_value; /*The 1st field of ListCell*/
-              read_memory (ListCell_ptr, (gdb_byte*)&ptr_value, sizeof(ptr_value));
-
-              newFld->set_type (lookup_pointer_type(get_type_from_NodeTag(ptr_value, false)));
-              newFld->set_loc_physaddr(ListCell_ptr);
-
-              /* get pointer to next ListCell */
-              read_memory (ListCell_ptr + sizeof(ptr_value), (gdb_byte*)&ListCell_ptr, sizeof(ListCell_ptr));
+              read_memory (addr + typeNodeTag->length (), (gdb_byte*)&length, sizeof (length));
+            }
+          catch (...)
+            {
+              return t;
             }
 
-            t->set_num_fields (std_fld_cnt + length);
-            t->set_fields (f);
+          if (length <= 0)
+            return t;
 
-            char typeName[16] = "List";
-            snprintf(typeName + 4, sizeof(typeName) - 4, "%i", length);
-            t->set_name(xstrdup(typeName));
-          }
+          length = std::min ((unsigned)length, user_print_options.print_max);
+          t = copy_type(t);
+          // The memory should be freed!
+          struct field *f = (struct field *)malloc (sizeof(*f) * (std_fld_cnt + length));
+          if (nullptr == f)
+            return nullptr;
+
+          memcpy (f, t->fields (), sizeof (*f) * std_fld_cnt);
+          memset (&f[std_fld_cnt], 0, sizeof (*f) * length);
+
+          char fldName[16] = "elem";
+          int iElem = 0;
+          try
+            {
+              CORE_ADDR ListCell_ptr;
+              read_memory (addr + t->field(2/*ListCell   *head*/).loc_bitpos()/8, (gdb_byte*)&ListCell_ptr, sizeof(ListCell_ptr));
+              for (; ListCell_ptr != 0 && iElem < length; iElem++)
+                {
+                  struct field *newFld = &f[std_fld_cnt + iElem];
+                  snprintf(fldName + 4, sizeof(fldName) - 4, "%i", iElem);
+                  newFld->set_name (xstrdup(fldName));
+
+                  CORE_ADDR ptr_value; /*The 1st field of ListCell*/
+                  read_memory (ListCell_ptr, (gdb_byte*)&ptr_value, sizeof(ptr_value));
+
+                  struct type *fld_type = get_type_from_NodeTag(ptr_value, false);
+                  if (nullptr == fld_type)
+                    break;
+
+                  newFld->set_type (lookup_pointer_type(fld_type));
+                  newFld->set_loc_physaddr(ListCell_ptr);
+
+                  /* get pointer to next ListCell */
+                  read_memory (ListCell_ptr + sizeof(ptr_value), (gdb_byte*)&ListCell_ptr, sizeof(ListCell_ptr));
+                }
+            }
+          catch(...){} // catch exceptions in read_memory()
+
+          t->set_num_fields (std_fld_cnt + iElem);
+          t->set_fields (f);
+
+          char typeName[16] = "List";
+          snprintf(typeName + 4, sizeof(typeName) - 4, "%i", iElem);
+          t->set_name(xstrdup(typeName));
         } else if (do_update_fields) {
           t = check_typedef(t);
           return update_type_fields(t, addr);
